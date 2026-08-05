@@ -2410,7 +2410,10 @@
                     document.getElementById('atleta-numero-peito-editavel').value = atleta.numero_peito || "";
                     document.getElementById('atleta-nome').value = atleta.nome || "";
                     carregarSelectsOndaCategoria('atleta'); // <--- PREENCHE OS SELECTS DA ENTREGA
-                    document.getElementById('atleta-onda').value = atleta.id_onda || "";
+                    const comboOndaAtleta = document.getElementById('atleta-onda');
+                    comboOndaAtleta.value = atleta.id_onda || "";
+                    // Simula um "clique" para preencher as categorias
+                    comboOndaAtleta.dispatchEvent(new Event('change'));
                     document.getElementById('atleta-categoria').value = atleta.id_categoria || "";
                     document.getElementById('atleta-equipe').value = atleta.equipe || "";
                     document.getElementById('atleta-nascimento').value = atleta.nascimento || "";
@@ -2462,13 +2465,28 @@
 
             const carimboAtual = obterCarimboAuditoria(); // Registra a hora EXATA
 
-            // 3. Verifica se tem internet e tenta salvar no Banco
+            // 3. Verifica se tem internet e tenta salvar no Banco (API NODE.JS)
             if (navigator.onLine) {
                 try {
-                    await updateDoc(doc(db, "atletas", idAtletaSelecionado), {
-                        retirou_kit: true,
-                        ...carimboAtual
+                    // Como a API de atualizar kit não pede todos os dados, 
+                    // podemos jogar na fila de sincronização (já pronta para o Node.js) e forçar a sincronização!
+                    filaKitsOffline.push({ id: idAtletaSelecionado });
+                    
+                    const resposta = await fetch(`${URL_API}/atletas/sincronizar`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${tokenJWT}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ kits: filaKitsOffline })
                     });
+                    
+                    if (resposta.ok) {
+                        filaKitsOffline = []; // Limpa a fila se deu certo
+                        localStorage.removeItem('fila_kits_offline');
+                    } else {
+                        throw new Error("Erro no servidor");
+                    }
                 } catch (error) {
                     // Se deu erro (rede instável), guarda no bolso!
                     guardarKitNoBolso(idAtletaSelecionado, carimboAtual);
@@ -2704,7 +2722,10 @@
             catKits.forEach(k => comboKit.innerHTML += `<option value="${k.id}">${k.nome}</option>`);
 
             // Preenche os campos
-            document.getElementById('ins-onda').value = atleta.id_onda || "";
+            const comboOndaIns = document.getElementById('ins-onda');
+            comboOndaIns.value = atleta.id_onda || "";
+            // Simula um "clique" para preencher as categorias
+            comboOndaIns.dispatchEvent(new Event('change'));
             document.getElementById('ins-categoria').value = atleta.id_categoria || "";
             document.getElementById('ins-nome').value = atleta.nome || "";
             document.getElementById('ins-cpf').value = atleta.cpf || "";
@@ -3018,8 +3039,8 @@
 
             // === ETAPA A: LIMPEZA E VALIDAÇÃO DE CADA LINHA ===
             // Pega o ano do evento atual para calcular as idades
-            const eventoAtual = meusEventos.find(e => e.nome === idCorridaAtual);
-            const anoDoEvento = eventoAtual ? parseInt(eventoAtual.data.split('-')[0]) : new Date().getFullYear();
+            const eventoAtual = meusEventos.find(e => String(e.id) === String(idCorridaAtual));
+            const anoDoEvento = eventoAtual && eventoAtual.data ? parseInt(eventoAtual.data.split('-')[0]) : new Date().getFullYear();
 
             for (let i = 0; i < dadosBrutosCSV.length; i++) {
                 const linha = dadosBrutosCSV[i];
@@ -3157,12 +3178,13 @@
                 const peitoCSV = formatarNum(atleta.numero_peito);
                 const tagCSV = formatarNum(atleta.numero_tag);
 
-                if (peitoCSV !== "" && peitosNesteCSV.has(peitoCSV)) { erros.push({ linha: numeroLinhaReal, nome: nomeAtletaInfo, motivo: `Peito ${peitoCSV} duplicado no CSV.` }); continue; }
-                if (tagCSV !== "" && tagsNesteCSV.has(tagCSV)) { erros.push({ linha: numeroLinhaReal, nome: nomeAtletaInfo, motivo: `TAG ${tagCSV} duplicada no CSV.` }); continue; }
+                if (peitoCSV !== "" && peitosNesteCSV.has(peitoCSV)) { erros.push({ linha: numeroLinhaReal, nome: nomeAtletaInfo, motivo: `Peito ${peitoCSV} duplicado no próprio CSV.` }); continue; }
+                if (tagCSV !== "" && tagsNesteCSV.has(tagCSV)) { erros.push({ linha: numeroLinhaReal, nome: nomeAtletaInfo, motivo: `TAG ${tagCSV} duplicada no próprio CSV.` }); continue; }
 
                 let idExistente = null;
                 let ignorarPorDuplicidadeBanco = false;
 
+                // 1. PRIMEIRA VERIFICAÇÃO: Existe pelo CPF? (Atualização normal)
                 const cpfCSV = atleta.cpf ? String(atleta.cpf).trim() : "";
                 if (cpfCSV !== "") {
                     const aBanco = listaAtletas.find(a => a.cpf && String(a.cpf).trim() === cpfCSV);
@@ -3172,21 +3194,40 @@
                     }
                 }
 
+                // 2. SEGUNDA VERIFICAÇÃO: Transferência de Peito/TAG (Caso o CPF seja diferente)
                 for (let aBanco of listaAtletas) {
+                    // Ignora a própria pessoa caso já tenhamos achado ela pelo CPF
                     if (idExistente && String(aBanco.id) === String(idExistente)) continue;
 
                     const peitoBanco = formatarNum(aBanco.numero_peito);
                     const tagBanco = formatarNum(aBanco.numero_tag);
+                    
+                    let houveChoque = false;
+                    let motivoChoque = "";
 
                     if (peitoCSV !== "" && peitoBanco === peitoCSV) { 
-                        erros.push({ linha: numeroLinhaReal, nome: nomeAtletaInfo, motivo: `Peito ${peitoCSV} já pertence a outro no banco.` }); 
-                        ignorarPorDuplicidadeBanco = true; 
-                        break; 
+                        houveChoque = true;
+                        motivoChoque = `Peito ${peitoCSV}`;
+                    } else if (tagCSV !== "" && tagBanco === tagCSV) { 
+                        houveChoque = true;
+                        motivoChoque = `TAG ${tagCSV}`;
                     }
-                    if (tagCSV !== "" && tagBanco === tagCSV) { 
-                        erros.push({ linha: numeroLinhaReal, nome: nomeAtletaInfo, motivo: `TAG ${tagCSV} já pertence a outro no banco.` }); 
-                        ignorarPorDuplicidadeBanco = true; 
-                        break; 
+
+                    if (houveChoque) {
+                        // Faz a pergunta de transferência
+                        const querTransferir = confirm(`O Atleta da base [${aBanco.nome}] já está utilizando o ${motivoChoque}.\n\nDeseja ATUALIZAR e TRANSFERIR este cadastro para o(a) atleta da planilha [${nomeAtletaInfo}]?`);
+                        
+                        if (querTransferir) {
+                            // Se sim, o idExistente vira o do atleta antigo, para ele ser sobrescrito
+                            idExistente = aBanco.id;
+                            atleta.retirou_kit = aBanco.retirou_kit;
+                            break; // Sai do loop e permite sobrescrever
+                        } else {
+                            // Se não, rejeita esse atleta do CSV
+                            erros.push({ linha: numeroLinhaReal, nome: nomeAtletaInfo, motivo: `${motivoChoque} pertence a outro e você recusou a transferência.` }); 
+                            ignorarPorDuplicidadeBanco = true; 
+                            break;
+                        }
                     }
                 }
 
@@ -3854,7 +3895,7 @@
 
 
         // ==========================================
-        // PREENCHER CAIXAS DE ONDA E CATEGORIA
+        // PREENCHER CAIXAS DE ONDA E CATEGORIA (INTELIGENTE)
         // ==========================================
         function carregarSelectsOndaCategoria(prefixo) {
             const selectOnda = document.getElementById(`${prefixo}-onda`);
@@ -3862,12 +3903,30 @@
 
             if (!selectOnda || !selectCat) return;
 
-            selectOnda.innerHTML = '<option value="">-- Escolha a Onda --</option>';
+            // 1. Preenche a Onda
+            selectOnda.innerHTML = '<option value="">-- Escolha a Modalidade/Onda --</option>';
             listaOndas.forEach(o => selectOnda.innerHTML += `<option value="${o.id}">${o.descricao}</option>`);
 
-            selectCat.innerHTML = '<option value="">-- Escolha a Categoria --</option>';
-            // Retiramos o sufixo, deixando apenas o nome limpo da categoria (ex: M30-34)
-            listaCategorias.forEach(c => selectCat.innerHTML += `<option value="${c.id}">${c.nome}</option>`);
+            // 2. Limpa a Categoria inicialmente
+            selectCat.innerHTML = '<option value="">-- Selecione uma Modalidade primeiro --</option>';
+
+            // 3. O Segredo: Ouve quando a Onda é trocada para preencher a Categoria filtrada
+            selectOnda.onchange = (e) => {
+                const idOndaEscolhida = e.target.value;
+                selectCat.innerHTML = '<option value="">-- Escolha a Categoria --</option>';
+
+                if (!idOndaEscolhida) {
+                    selectCat.innerHTML = '<option value="">-- Selecione uma Modalidade primeiro --</option>';
+                    return;
+                }
+
+                // Filtra as categorias para mostrar SOMENTE as que pertencem à onda escolhida
+                const categoriasFiltradas = listaCategorias.filter(c => String(c.id_onda) === String(idOndaEscolhida));
+                
+                categoriasFiltradas.forEach(c => {
+                    selectCat.innerHTML += `<option value="${c.id}">${c.nome}</option>`;
+                });
+            };
         }
 
         // ==========================================
@@ -3966,7 +4025,8 @@
         // PDF 1: Numérico Inscritos
         document.getElementById('btn-pdf-inscritos').addEventListener('click', () => {
             const { jsPDF } = window.jspdf; const doc = new jsPDF();
-            doc.setFontSize(18); doc.text(`Resumo de Inscritos - ${idCorridaAtual}`, 14, 20);
+            // CORREÇÃO: Usa nomeCorridaAtual para o nome ficar bonito no título
+            doc.setFontSize(18); doc.text(`Resumo de Inscritos - ${nomeCorridaAtual}`, 14, 20);
 
             const stats = [
                 ['Total de Inscritos', document.getElementById('rel-tot-inscritos').innerText],
@@ -3980,13 +4040,15 @@
             document.querySelectorAll('.linha-cat-rel').forEach(tr => catDados.push([tr.children[0].innerText, tr.children[1].innerText]));
             doc.autoTable({ startY: doc.lastAutoTable.finalY + 10, head: [['Categoria', 'Inscritos']], body: catDados, theme: 'grid' });
 
-            doc.save(`Numeros_Inscritos_${idCorridaAtual}.pdf`);
+            // CORREÇÃO: Usa o nome no arquivo
+            doc.save(`Resumo_Inscritos_${nomeCorridaAtual}.pdf`);
         });
 
         // PDF 2: Numérico Kits
         document.getElementById('btn-pdf-kits').addEventListener('click', () => {
             const { jsPDF } = window.jspdf; const doc = new jsPDF();
-            doc.setFontSize(18); doc.text(`Resumo de Kits e Brindes - ${idCorridaAtual}`, 14, 20);
+            // CORREÇÃO: Título usando o nome do evento
+            doc.setFontSize(18); doc.text(`Resumo de Kits e Brindes - ${nomeCorridaAtual}`, 14, 20);
 
             const stats = [
                 ['Kits Retirados', document.getElementById('rel-kits-retirados-aba2').innerText],
@@ -3998,7 +4060,8 @@
             document.querySelectorAll('#tabela-rel-camisetas tr').forEach(tr => camDados.push([tr.children[0].innerText, tr.children[1].innerText]));
             doc.autoTable({ startY: doc.lastAutoTable.finalY + 10, head: [['Tamanho da Camiseta', 'Quantidade Total']], body: camDados, theme: 'grid' });
 
-            doc.save(`Numeros_Kits_${idCorridaAtual}.pdf`);
+            // CORREÇÃO: Nome do arquivo
+            doc.save(`Numeros_Kits_${nomeCorridaAtual}.pdf`);
         });
 
         // PDF 3: STARTLIST OFICIAL (Modalidade -> Categoria -> Nome)
@@ -4007,18 +4070,29 @@
             const doc = new jsPDF('landscape'); // Startlist geralmente fica melhor na horizontal
 
             doc.setFontSize(18);
-            doc.text(`STARTLIST OFICIAL - ${idCorridaAtual}`, 14, 20);
+            // CORREÇÃO: Nome do evento no título
+            doc.text(`STARTLIST OFICIAL - ${nomeCorridaAtual}`, 14, 20);
 
             // Cria uma cópia da lista para não alterar a tabela principal da tela
             let listaOrdenada = [...listaAtletas];
 
-            // O Segredo da Tripla Ordenação
+            // O Segredo da Tripla Ordenação (CORRIGIDO PARA BUSCAR OS NOMES DOS CATÁLOGOS)
             listaOrdenada.sort((a, b) => {
-                const ondaA = (a.nome_onda || "").localeCompare(b.nome_onda || "");
-                if (ondaA !== 0) return ondaA; // 1º Ordena pela Modalidade
+                const ondaObjA = listaOndas.find(o => o.id == a.id_onda);
+                const ondaObjB = listaOndas.find(o => o.id == b.id_onda);
+                const nomeOndaA = ondaObjA ? ondaObjA.descricao : "";
+                const nomeOndaB = ondaObjB ? ondaObjB.descricao : "";
 
-                const catA = (a.nome_categoria || "").localeCompare(b.nome_categoria || "");
-                if (catA !== 0) return catA; // 2º Se a Modalidade for igual, ordena pela Categoria
+                const compOnda = nomeOndaA.localeCompare(nomeOndaB);
+                if (compOnda !== 0) return compOnda; // 1º Ordena pela Modalidade
+
+                const catObjA = listaCategorias.find(c => c.id == a.id_categoria);
+                const catObjB = listaCategorias.find(c => c.id == b.id_categoria);
+                const nomeCatA = catObjA ? catObjA.nome : "";
+                const nomeCatB = catObjB ? catObjB.nome : "";
+
+                const compCat = nomeCatA.localeCompare(nomeCatB);
+                if (compCat !== 0) return compCat; // 2º Se a Modalidade for igual, ordena pela Categoria
 
                 return (a.nome || "").localeCompare(b.nome || ""); // 3º Se a Categoria for igual, alfabética
             });
@@ -4053,7 +4127,8 @@
                 }
             });
 
-            doc.save(`Startlist_Oficial_${idCorridaAtual}.pdf`);
+            // CORREÇÃO: Nome do arquivo
+            doc.save(`Startlist_Oficial_${nomeCorridaAtual.replace(/\s+/g, '_')}.pdf`);
         });
 
 
@@ -4062,12 +4137,18 @@
         // LÓGICAS DE EXCLUSÃO INDIVIDUAL (ATLETA, ONDA, EVENTO, CATEGORIA)
         // ==========================================
 
-        // 1. Excluir Atleta
+        // 1. Excluir Atleta (API NODE.JS)
         document.getElementById('btn-excluir-inscricao').addEventListener('click', async () => {
             if (!idAtletaEdicaoInscricao) return;
             if (confirm("Tem certeza que deseja excluir este Atleta permanentemente?")) {
                 try {
-                    await deleteDoc(doc(db, "atletas", idAtletaEdicaoInscricao));
+                    const res = await fetch(`${URL_API}/atletas/${idAtletaEdicaoInscricao}`, { 
+                        method: 'DELETE', 
+                        headers: { 'Authorization': `Bearer ${tokenJWT}` } 
+                    });
+                    
+                    if (!res.ok) throw new Error("Falha ao excluir no banco de dados.");
+
                     listaAtletas = listaAtletas.filter(a => a.id !== idAtletaEdicaoInscricao);
                     renderizarTabelaInscricoes(listaAtletas);
                     fecharModalInscricao();
@@ -4145,9 +4226,12 @@
                     // Carrega as opções de Onda e Categoria
                     carregarSelectsOndaCategoria('transf');
 
-                    // Preenche o formulário
+                      // Preenche o formulário
                     document.getElementById('titulo-transferencia').innerText = 'Transferindo: ' + (atleta.nome || 'Atleta');
-                    document.getElementById('transf-onda').value = atleta.id_onda || "";
+                    const comboOndaTransf = document.getElementById('transf-onda');
+                    comboOndaTransf.value = atleta.id_onda || "";
+                    // Simula um "clique" para preencher as categorias
+                    comboOndaTransf.dispatchEvent(new Event('change'));
                     document.getElementById('transf-categoria').value = atleta.id_categoria || "";
                     document.getElementById('transf-nome').value = atleta.nome || "";
                     document.getElementById('transf-cpf').value = atleta.cpf || "";
