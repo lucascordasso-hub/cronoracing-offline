@@ -1320,6 +1320,24 @@
                                     type="number" id="ond-distancia" placeholder="5000" required style="margin:0;">
                             </div>
                         </div>
+
+                        <!-- NOVOS CAMPOS DE CLASSIFICAÇÃO -->
+                        <h4 style="margin-top: 25px; margin-bottom: 10px; color: #aaa;">Regras de Classificação e Pódio</h4>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; background-color: #1f222e; padding: 15px; border-radius: 6px; border: 1px dashed #555;">
+                            <div class="campo-dados" style="margin: 0;">
+                                <label style="color: var(--cor-neon);">Quantidade Geral</label>
+                                <input type="number" id="ond-podio-geral" value="5" min="1" required style="margin:0;">
+                            </div>
+                            <div class="campo-dados" style="margin: 0;">
+                                <label style="color: var(--cor-neon);">Quantidade Categoria</label>
+                                <input type="number" id="ond-podio-cat" value="3" min="1" required style="margin:0;">
+                            </div>
+                            <div class="campo-dados" style="grid-column: span 2; display: flex; align-items: center; gap: 10px; margin: 0;">
+                                <input type="checkbox" id="ond-sem-classificacao" style="margin: 0; width: 20px; height: 20px;">
+                                <label style="margin: 0; font-size: 15px; cursor: pointer; color: white;">Onda Sem Classificação (Apenas Registro)</label>
+                            </div>
+                        </div>
+
                         <div style="display: flex; gap: 15px; margin-top: 25px;">
                             <button type="button" id="btn-cancelar-onda"
                                 style="background-color: #6c757d; margin: 0;">Cancelar</button>
@@ -1430,9 +1448,20 @@
                                 <label>Nome do Evento (Deve ser Único - Será a Referência)</label>
                                 <input type="text" id="ev-nome" required style="margin:0;">
                             </div>
-                            <div class="campo-dados" style="grid-column: span 2; margin: 0;">
-                                <label>Modalidade (Tipo da Prova. Ex: Corrida 5k, Natação)</label>
-                                <input type="text" id="ev-tipo" required style="margin:0;">
+                            
+                            <div class="campo-dados" style="margin: 0;">
+                                <label>Tipo de Evento</label>
+                                <select id="ev-tipo-evento" required style="margin:0;">
+                                    <option value="">-- Selecione --</option>
+                                    <option value="Corrida de Rua/Trail Run/Maratona">Corrida de Rua/Trail Run/Maratona</option>
+                                    <option value="Aguas Abertas">Águas Abertas</option>
+                                    <option value="Hyrox">Hyrox</option>
+                                    <option value="Triathlon">Triathlon</option>
+                                </select>
+                            </div>
+                            <div class="campo-dados" style="margin: 0;">
+                                <label>Prefixo da TAG (Ex: 1A2B)</label>
+                                <input type="text" id="ev-prefixo-tag" maxlength="4" placeholder="Máx 4 carac." style="margin:0;">
                             </div>
                             
                             <div class="campo-dados" style="margin: 0;"><label>Data</label><input type="date" id="ev-data" required style="margin:0;"></div>
@@ -2026,6 +2055,11 @@
                     }
                 });
 
+                // SE O TOKEN FOR INVÁLIDO (Ex: Banco de dados resetado), FORÇA LOGOUT!
+                if (resposta.status === 401 || resposta.status === 403) {
+                    throw new Error("SESSAO_EXPIRADA");
+                }
+
                 if (!resposta.ok) throw new Error("Erro ao buscar os eventos no servidor.");
 
                 meusEventos = await resposta.json();
@@ -2034,7 +2068,7 @@
                 if (meusEventos.length === 0) {
                     document.getElementById('lbl-evento-menu').innerText = "Nenhum";
                     document.getElementById('lbl-evento-atual-cadastros').innerText = "NENHUM";
-                    alert("Você não possui acesso a nenhum evento.");
+                    alert("Bem-vindo! Você não possui acesso a nenhum evento ainda. Cadastre um novo Evento.");
                     abrirTela('tela-cadastros');
                 } else {
                     abrirTela('tela-menu');
@@ -2042,7 +2076,17 @@
                 }
             } catch (error) {
                 console.error("Erro no login:", error);
-                alert("Erro ao carregar os dados do evento. O servidor está rodando?");
+                
+                // MÁGICA: Se a sessão for considerada morta pelo servidor, força o deslogamento visual!
+                if (error.message === "SESSAO_EXPIRADA") {
+                    alert("⚠️ Sua sessão expirou ou o banco foi redefinido. Faça o login novamente.");
+                    // Clica no botão invisível de sair
+                    const btnSair = document.getElementById('btn-sair');
+                    if(btnSair) btnSair.click();
+                } else {
+                    alert("Erro ao carregar os dados do evento. Verifique se o servidor Node está rodando.");
+                    document.getElementById('btn-entrar').innerText = "Entrar no Sistema";
+                }
             }
         }
 
@@ -3468,7 +3512,8 @@
                     await carregarCombosUsuariosEvento(); // Popula os combos antes de setar o valor
                     
                     document.getElementById('ev-nome').value = ev.nome;
-                    document.getElementById('ev-tipo').value = ev.tipo || "";
+                    document.getElementById('ev-tipo-evento').value = ev.tipo_evento || "";
+                    document.getElementById('ev-prefixo-tag').value = ev.prefixo_tag || "";
                     document.getElementById('ev-local').value = ev.local || "";
                     document.getElementById('ev-data').value = ev.data || "";
                     document.getElementById('ev-horario').value = ev.horario || "";
@@ -3489,7 +3534,8 @@
 
             const dadosEvento = {
                 descricao: document.getElementById('ev-nome').value.trim(),
-                tipo: document.getElementById('ev-tipo').value.trim(),
+                tipo_evento: document.getElementById('ev-tipo-evento').value,
+                prefixo_tag: document.getElementById('ev-prefixo-tag').value.trim(),
                 local: document.getElementById('ev-local').value,
                 dataInicio: document.getElementById('ev-data').value,
                 horario: document.getElementById('ev-horario').value,
@@ -3591,6 +3637,11 @@
                     document.getElementById('ond-tml').value = onda.tml;
                     document.getElementById('ond-voltas').value = onda.voltas;
                     document.getElementById('ond-distancia').value = onda.distancia;
+                    
+                    document.getElementById('ond-podio-geral').value = onda.qtdePodioGeral || 5;
+                    document.getElementById('ond-podio-cat').value = onda.qtdePodioCat || 3;
+                    document.getElementById('ond-sem-classificacao').checked = onda.semClassificacao === true || onda.semClassificacao === 1;
+
                     modalOnda.style.display = 'flex';
                 };
                 tbody.appendChild(tr);
@@ -3605,7 +3656,10 @@
                 tmv: document.getElementById('ond-tmv').value,
                 tml: document.getElementById('ond-tml').value,
                 voltas: document.getElementById('ond-voltas').value,
-                distancia: document.getElementById('ond-distancia').value
+                distancia: document.getElementById('ond-distancia').value,
+                qtdePodioGeral: parseInt(document.getElementById('ond-podio-geral').value),
+                qtdePodioCat: parseInt(document.getElementById('ond-podio-cat').value),
+                semClassificacao: document.getElementById('ond-sem-classificacao').checked ? 1 : 0
             };
 
             try {
